@@ -1326,86 +1326,7 @@ async function handleAdminReply(msg, env, ctx) {
     return;
   }
 
-  // 优先通过 thread 映射快速反查用户，缺失时再降级全量扫描
-  let userId = null;
-  const mappedUser = await env.TOPIC_MAP.get(`thread:${threadId}`);
-  if (mappedUser) {
-    userId = Number(mappedUser);
-  } else {
-    const allKeys = await getAllKeys(env, "user:");
-    for (const { name } of allKeys) {
-      const rec = await safeGetJSON(env, name, null);
-      if (rec && Number(rec.thread_id) === Number(threadId)) {
-        userId = Number(name.slice(5));
-        break;
-      }
-    }
-  }
-
-  // 如果找不到用户，说明可能是在普通话题，或者数据丢失，直接返回
-  if (!userId) return;
-
-  // --- 指令区域 ---
-
-  if (text === "/close") {
-    const key = `user:${userId}`;
-    let rec = await safeGetJSON(env, key, null);
-    if (rec) {
-      rec.closed = true;
-      await env.TOPIC_MAP.put(key, JSON.stringify(rec));
-      await tgCall(env, "closeForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId });
-      await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🚫 **对话已强制关闭**", parse_mode: "Markdown" });
-    }
-    return;
-  }
-
-  if (text === "/open") {
-    const key = `user:${userId}`;
-    let rec = await safeGetJSON(env, key, null);
-    if (rec) {
-      rec.closed = false;
-      await env.TOPIC_MAP.put(key, JSON.stringify(rec));
-      await tgCall(env, "reopenForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId });
-      await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **对话已恢复**", parse_mode: "Markdown" });
-    }
-    return;
-  }
-
-  if (text === "/reset") {
-    await env.TOPIC_MAP.delete(`verified:${userId}`);
-    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🔄 **验证重置**", parse_mode: "Markdown" });
-    return;
-  }
-
-  if (text === "/trust") {
-    await env.TOPIC_MAP.put(`verified:${userId}`, "trusted");
-    await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
-    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🌟 **已设置永久信任**", parse_mode: "Markdown" });
-    return;
-  }
-
-  if (text === "/ban") {
-    await env.TOPIC_MAP.put(`banned:${userId}`, "1");
-    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🚫 **用户已封禁**", parse_mode: "Markdown" });
-    return;
-  }
-
-  if (text === "/unban") {
-    await env.TOPIC_MAP.delete(`banned:${userId}`);
-    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **用户已解封**", parse_mode: "Markdown" });
-    return;
-  }
-
-  if (text === "/info") {
-    const userKey = `user:${userId}`;
-    const userRec = await safeGetJSON(env, userKey, null);
-    const verifyStatus = await env.TOPIC_MAP.get(`verified:${userId}`);
-    const banStatus = await env.TOPIC_MAP.get(`banned:${userId}`);
-
-    const info = `👤 **用户信息**\nUID: \`${userId}\`\nTopic ID: \`${threadId}\`\n话题标题: ${userRec?.title || "未知"}\n验证状态: ${verifyStatus ? (verifyStatus === 'trusted' ? '🌟 永久信任' : '✅ 已验证') : '❌ 未验证'}\n封禁状态: ${banStatus ? '🚫 已封禁' : '✅ 正常'}\nLink: [点击私聊](tg://user?id=${userId})`;
-    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: info, parse_mode: "Markdown" });
-    return;
-  }
+  // --- 全局命令（不依赖 userId，可在 General 话题执行） ---
 
   // PR #12: /help 指令
   if (text === "/help") {
@@ -1527,6 +1448,87 @@ async function handleAdminReply(msg, env, ctx) {
     reply += dynamic.length > 0 ? dynamic.map(w => `  • ${w}`).join("\n") : "  (无)";
 
     await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: reply, parse_mode: "Markdown" });
+    return;
+  }
+
+  // 优先通过 thread 映射快速反查用户，缺失时再降级全量扫描
+  let userId = null;
+  const mappedUser = await env.TOPIC_MAP.get(`thread:${threadId}`);
+  if (mappedUser) {
+    userId = Number(mappedUser);
+  } else {
+    const allKeys = await getAllKeys(env, "user:");
+    for (const { name } of allKeys) {
+      const rec = await safeGetJSON(env, name, null);
+      if (rec && Number(rec.thread_id) === Number(threadId)) {
+        userId = Number(name.slice(5));
+        break;
+      }
+    }
+  }
+
+  // 如果找不到用户，说明可能是在普通话题，或者数据丢失，直接返回
+  if (!userId) return;
+
+  // --- 指令区域 ---
+
+  if (text === "/close") {
+    const key = `user:${userId}`;
+    let rec = await safeGetJSON(env, key, null);
+    if (rec) {
+      rec.closed = true;
+      await env.TOPIC_MAP.put(key, JSON.stringify(rec));
+      await tgCall(env, "closeForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId });
+      await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🚫 **对话已强制关闭**", parse_mode: "Markdown" });
+    }
+    return;
+  }
+
+  if (text === "/open") {
+    const key = `user:${userId}`;
+    let rec = await safeGetJSON(env, key, null);
+    if (rec) {
+      rec.closed = false;
+      await env.TOPIC_MAP.put(key, JSON.stringify(rec));
+      await tgCall(env, "reopenForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId });
+      await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **对话已恢复**", parse_mode: "Markdown" });
+    }
+    return;
+  }
+
+  if (text === "/reset") {
+    await env.TOPIC_MAP.delete(`verified:${userId}`);
+    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🔄 **验证重置**", parse_mode: "Markdown" });
+    return;
+  }
+
+  if (text === "/trust") {
+    await env.TOPIC_MAP.put(`verified:${userId}`, "trusted");
+    await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
+    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🌟 **已设置永久信任**", parse_mode: "Markdown" });
+    return;
+  }
+
+  if (text === "/ban") {
+    await env.TOPIC_MAP.put(`banned:${userId}`, "1");
+    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🚫 **用户已封禁**", parse_mode: "Markdown" });
+    return;
+  }
+
+  if (text === "/unban") {
+    await env.TOPIC_MAP.delete(`banned:${userId}`);
+    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **用户已解封**", parse_mode: "Markdown" });
+    return;
+  }
+
+  if (text === "/info") {
+    const userKey = `user:${userId}`;
+    const userRec = await safeGetJSON(env, userKey, null);
+    const verifyStatus = await env.TOPIC_MAP.get(`verified:${userId}`);
+    const banStatus = await env.TOPIC_MAP.get(`banned:${userId}`);
+
+    const info = `👤 **用户信息**\nUID: \`${userId}\`\nTopic ID: \`${threadId}\`\n话题标题: ${userRec?.title || "未知"}\n验证状态: ${verifyStatus ? (verifyStatus === 'trusted' ? '🌟 永久信任' : '✅ 已验证') : '❌ 未验证'}\n封禁状态: ${banStatus ? '🚫 已封禁' : '✅ 正常'}\nLink: [点击私聊](tg://user?id=${userId})`;
+    await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: info, parse_mode: "Markdown" });
     return;
   }
 
