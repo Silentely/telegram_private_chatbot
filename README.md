@@ -243,6 +243,39 @@ A: 两种方式：
 
 ---
 
+## 🔌 API 端点
+
+Worker 暴露以下 HTTP 端点：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/` | GET | 健康检查，返回 `"OK"` |
+| `/health` | GET | 健康检查（同 `/`） |
+| `/verify` | GET | Turnstile 人机验证页面（HTML），参数：`code`（验证 ID）、`uid`（用户 ID） |
+| `/verify-callback` | POST | Turnstile token 验证接口，请求体：`{ token, code, userId }`，响应：`{ success, pendingCount?, error? }` |
+| `/` | POST | Telegram Webhook 接收端点，接收 Telegram Update 对象 |
+
+### /verify-callback 响应示例
+
+**成功响应：**
+```json
+{ "success": true, "pendingCount": 3 }
+```
+
+**错误响应：**
+```json
+{ "success": false, "error": "turnstile_failed" }
+```
+
+| 错误码 | 说明 |
+|--------|------|
+| `missing_params` | 缺少必要参数 |
+| `turnstile_failed` | Turnstile token 验证失败 |
+| `code_invalid_or_expired` | 验证链接已过期 |
+| `server_error` | 服务器内部错误 |
+
+---
+
 ## 🔒 安全说明
 
 > [!IMPORTANT]

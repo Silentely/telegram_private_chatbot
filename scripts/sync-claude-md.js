@@ -61,17 +61,30 @@ function extractConfigKeys(filePath) {
 
 function extractKvKeys(filePath) {
   const content = readFileSync(filePath, 'utf8');
-  // 匹配 env.TOPIC_MAP.get/put/delete("...") 中的字面量键
-  const kvPattern = /TOPIC_MAP\.(?:get|put|delete)\(\s*[`'"]([^`'"]+)[`'"]/g;
   const keys = new Set();
+
+  // 1. 匹配字面量字符串键：TOPIC_MAP.get("key") 或 TOPIC_MAP.get('key')
+  const literalPattern = /TOPIC_MAP\.(?:get|put|delete)\(\s*[`'"]([^`'"]+)[`'"]/g;
   let m;
-  while ((m = kvPattern.exec(content)) !== null) {
-    // 只保留非模板字符串的键（不含 ${}）
-    if (!m[1].includes('${')) {
-      keys.add(m[1]);
-    }
+  while ((m = literalPattern.exec(content)) !== null) {
+    keys.add(m[1]);
   }
-  return [...keys].sort();
+
+  // 2. 匹配模板字符串键：TOPIC_MAP.get(`user:${userId}`) → 提取为 `user:{userId}`
+  const templatePattern = /TOPIC_MAP\.(?:get|put|delete)\(\s*`([^`]+)`/g;
+  while ((m = templatePattern.exec(content)) !== null) {
+    // 将模板变量 ${varName} 归一化为 {id}，消除不同变量名的差异
+    const key = m[1].replace(/\$\{[^}]+\}/g, '{id}');
+    keys.add(key);
+  }
+
+  // 3. 对所有键名做最终归一化，确保 `banned:${userId}` 和 `banned:{id}` 合并
+  const normalized = new Set();
+  for (const key of keys) {
+    normalized.add(key.replace(/\$\{[^}]+\}/g, '{id}'));
+  }
+
+  return [...normalized].sort();
 }
 
 // --- 2. 生成 Markdown 表格 ---

@@ -26,6 +26,18 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 
 ---
 
+## 📝 Changelog (v5.4)
+
+| Date | Changes |
+|------|---------|
+| 2026-06-30 | Security: Added SSRF protection for `API_BASE` allowlist; Fixed XSS in verification page HTML template |
+| 2026-06-30 | Resilience: Added top-level try-catch to `handleAdminReply` and `sendVerificationChallenge` with KV rollback |
+| 2026-06-30 | Performance: Eliminated duplicate blocked-words/spam checks; parallelized pending message forwarding |
+| 2026-06-30 | Stability: Added TTL eviction for `messageHashCache`; added negative cache for missing thread mappings |
+| 2026-06-30 | Infrastructure: Updated `compatibility_date`; fixed KV key extraction in sync script |
+
+---
+
 ## ✨ Key Features
 
 | Feature | Description |
@@ -53,6 +65,11 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 | `/trust` | **Permanent Trust**<br>The user will be permanently exempt from CAPTCHA verification (never expires). | Acquaintances, VIP clients, long-term partners. |
 | `/reset` | **Reset Verification**<br>Forcibly clears the user's verification status; re-verification required next time. | Testing verification flow, or suspected account compromise. |
 | `/info` | **View Info**<br>Displays the current user's UID, Topic ID, and profile link. | Checking user details. |
+| `/help` | **Help**<br>Displays the full list of available admin commands. | Quick reference. |
+| `/addword` | **Add Blocked Word**<br>Adds a word to the dynamic blocked words list (KV). | Blocking new spam keywords. |
+| `/delword` | **Remove Blocked Word**<br>Removes a word from the dynamic blocked words list. | Unblocking a word. |
+| `/listwords` | **List Blocked Words**<br>Displays all blocked words (hardcoded + dynamic). | Reviewing blocked words. |
+| `/cleanup` | **Cleanup Orphaned Data**<br>Scans and cleans up orphaned KV records (deleted topics, expired data). | Maintenance. |
 
 ---
 
@@ -121,6 +138,47 @@ If it returns `{"ok":true, "result":true, "description":"Webhook was set"}`, the
 
 ---
 
+## ⚙️ Environment Variables
+
+#### Required Variables
+
+| Variable | Description |
+|----------|-------------|
+| `BOT_TOKEN` | Telegram Bot Token (from @BotFather) |
+| `SUPERGROUP_ID` | Admin group ID (starts with -100) |
+
+#### KV Binding
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `TOPIC_MAP` | KV Namespace | Stores user mappings, verification state, topic info |
+
+#### Optional Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TURNSTILE_SITE_KEY` | Turnstile Site Key (enables Turnstile verification) |
+| `TURNSTILE_SECRET_KEY` | Turnstile Secret Key |
+| `VERIFICATION_PAGE_URL` | Worker origin URL (without `/verify` suffix, e.g. `https://your-worker.workers.dev`) |
+| `SPAM_KEYWORDS` | Spam keywords (comma-separated) |
+| `SPAM_SILENCE_MODE` | Silent mode (true/false) |
+| `ADMIN_IDS` | Admin user ID whitelist (comma-separated) |
+| `API_BASE` | Telegram Bot API base URL (default: `https://api.telegram.org`; allowlist-restricted) |
+
+---
+
+## 🔌 API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Health check, returns `"OK"` |
+| `/health` | GET | Health check (same as `/`) |
+| `/verify` | GET | Turnstile verification page (HTML). Params: `code`, `uid` |
+| `/verify-callback` | POST | Turnstile token verification. Body: `{ token, code, userId }`. Response: `{ success, pendingCount?, error? }` |
+| `/` | POST | Telegram webhook receiver (Telegram Update object) |
+
+---
+
 ## ❓ FAQ
 
 **Q: Why does clicking the verification button do nothing?**
@@ -129,19 +187,31 @@ A: Please check if the Webhook is set correctly. You must ensure Telegram is all
 **Q: Why can't the bot create topics in the group?**
 A: Please ensure: 1. Group ID is correct (starts with -100); 2. Topics are enabled in the group; 3. The bot is an administrator and has "Manage Topics" permission.
 
+**Q: How do I add/remove blocked words?**
+A: Use `/addword <word>` and `/delword <word>` in the admin group. Use `/listwords` to view all blocked words.
+
+**Q: What is the difference between /trust and /reset?**
+A: `/trust` permanently exempts a user from verification (never expires). `/reset` clears the user's verification status, requiring them to verify again on their next message.
+
+**Q: How do I clean up orphaned data?**
+A: Use `/cleanup` in the admin group. It scans for deleted topics and expired KV records and cleans them up.
+
+**Q: Can I use a self-hosted Telegram Bot API server?**
+A: Yes, set the `API_BASE` environment variable. Note: only `https://api.telegram.org` and `https://api.telegram.dev` are allowed.
+
 ---
 
 ## 🔒 Security Note
 
 > [!IMPORTANT]
-> Please keep your Bot API Token and Secret Token safe, as this information is critical to the security of your service.
+> Please keep your Bot API Token and Turnstile Secret Key safe. Do not commit them to version control.
 
 > [!WARNING]
-> Do not change the configured Secret Token arbitrarily! After changing it, all registered bots will fail to work because they cannot match the original token. If you need to change it, all bots must be re-registered.
+> The `/verify-callback` endpoint is a public POST endpoint. It validates tokens via Turnstile and code matching, but does not require additional authentication. The verification page (`/verify`) escapes all user-supplied parameters to prevent XSS attacks.
 
-- Choose a secure and memorable Secret Token during initial setup.
-- Avoid using simple or common prefixes.
-- Do not share sensitive information with others.
+- All secrets should be set via `wrangler secret put` (encrypted) rather than plain environment variables.
+- The `API_BASE` variable is restricted to a whitelist to prevent SSRF attacks.
+- Rate limiting is applied to message sending and verification requests.
 
 ---
 
