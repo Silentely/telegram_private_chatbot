@@ -1,18 +1,114 @@
 // Cloudflare Worker：Telegram 双向机器人 v5.4 (合并 PR #11 + PR #12)
 
-// --- 导入纯函数模块（单一来源，便于单元测试） ---
-import {
-  containsBlockedWord,
-  containsLink,
-  detectSpamKeywords,
-  computeMessageHash,
-  normalizeTgDescription,
-  isTopicMissingOrDeleted,
-  isTestMessageInvalid,
-  withMessageThreadId,
-  parseSpamKeywords,
-  generateVerifyCode,
-} from './src/utils.js';
+// --- 纯函数工具（内联自 src/utils.js，便于单文件部署到 Cloudflare Workers） ---
+
+/**
+ * 检查文本是否包含屏蔽词
+ */
+function containsBlockedWord(text, words) {
+  if (!text || !words || words.length === 0) return { hit: false, word: null };
+  const lower = text.toLowerCase();
+  for (const w of words) {
+    if (w && lower.includes(w.toLowerCase())) {
+      return { hit: true, word: w };
+    }
+  }
+  return { hit: false, word: null };
+}
+
+/**
+ * 检测消息文本中是否包含 URL/链接
+ */
+function containsLink(text) {
+  if (!text) return false;
+  const patterns = [
+    /https?:\/\/\S+/i,
+    /[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}(\/\S*)?/,
+    /t\.me\/\S+/i,
+    /telegram\.me\/\S+/i,
+  ];
+  return patterns.some(p => p.test(text));
+}
+
+/**
+ * 检测消息是否包含垃圾关键词
+ */
+function detectSpamKeywords(text, keywords) {
+  if (!text || keywords.length === 0) return { isSpam: false, matchedWord: null };
+  const lower = text.toLowerCase();
+  for (const word of keywords) {
+    if (lower.includes(word)) return { isSpam: true, matchedWord: word };
+  }
+  return { isSpam: false, matchedWord: null };
+}
+
+/**
+ * 计算消息内容的简单哈希（用于重复检测）
+ */
+function computeMessageHash(msg) {
+  const text = (msg.text || msg.caption || '').trim().toLowerCase();
+  if (!text) return null;
+  const fingerprint = `${text.length}|${text.substring(0, 100)}|${text.substring(Math.max(0, text.length - 20))}`;
+  return fingerprint;
+}
+
+/**
+ * 标准化 Telegram API 描述字符串
+ */
+function normalizeTgDescription(description) {
+  return (description || "").toString().toLowerCase();
+}
+
+/**
+ * 判断话题是否不存在或已被删除
+ */
+function isTopicMissingOrDeleted(description) {
+  const desc = normalizeTgDescription(description);
+  return desc.includes("thread not found") ||
+    desc.includes("topic not found") ||
+    desc.includes("message thread not found") ||
+    desc.includes("topic deleted") ||
+    desc.includes("thread deleted") ||
+    desc.includes("forum topic not found") ||
+    desc.includes("topic closed permanently");
+}
+
+/**
+ * 判断探测消息是否因内容为空而失败
+ */
+function isTestMessageInvalid(description) {
+  const desc = normalizeTgDescription(description);
+  return desc.includes("message text is empty") ||
+    desc.includes("bad request: message text is empty");
+}
+
+/**
+ * 为请求 body 添加 message_thread_id 字段
+ */
+function withMessageThreadId(body, threadId) {
+  if (threadId === undefined || threadId === null) return body;
+  return { ...body, message_thread_id: threadId };
+}
+
+/**
+ * 将 SPAM_KEYWORDS 环境变量解析为关键词数组
+ */
+function parseSpamKeywords(raw) {
+  if (!raw) return [];
+  return raw.toString().trim()
+    .split(/[,;，；\n]+/g)
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.length > 0);
+}
+
+/**
+ * 生成安全的验证 code（16 字节十六进制）
+ */
+function generateVerifyCode() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 // --- 配置常量 ---
 const CONFIG = {
