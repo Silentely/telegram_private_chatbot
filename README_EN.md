@@ -1,4 +1,4 @@
-# 🛡️ TeleGuard (v4.0)
+# 🛡️ Telegram Private Chatbot (v5.4)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -7,7 +7,7 @@
 
 [🇺🇸 English](README_EN.md) | [🇨🇳 简体中文](README.md)
 
-**Telegram Private Chatbot** is a high-performance, two-way private messaging bot based on **Cloudflare Workers**. It is designed to solve the problem of spam harassment on Telegram, featuring a zero-latency local CAPTCHA verification system, a powerful set of administrator commands, and a seamless message forwarding experience.
+**Telegram Private Chatbot** is a high-performance, two-way private messaging bot based on **Cloudflare Workers**. It is designed to solve the problem of spam harassment on Telegram, featuring **Cloudflare Turnstile verification**, **smart content filtering**, a powerful set of administrator commands, and a seamless message forwarding experience.
 
 Deploy a free, enterprise-grade customer service system utilizing Cloudflare's powerful edge computing network without purchasing any servers.
 
@@ -28,12 +28,10 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 
 ## ✨ Key Features
 
-Version 4.0 removes all unstable external API dependencies, focusing on **extreme speed** and **absolute stability**.
-
 | Feature | Description |
 | :--- | :--- |
-| **⚡ Zero-Latency Verification** | Uses a **local curated trivia database**. Verifies instantly, completely eliminating network timeouts and API errors with a 100% success rate. |
-| **🛡️ Smart Anti-Spam** | **Short ID mechanism** fixes the Telegram button click failure bug. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
+| **🔐 Turnstile Verification** | Supports **Cloudflare Turnstile** verification, auto-degrades to a **local curated trivia database** when not configured. |
+| **🛡️ Smart Anti-Spam** | **Keyword filtering** + **link blocking** + **repeat message circuit breaker**, triple protection. Provides a **30-day disturbance-free period** after verification. |
 | **💬 Topic Group Management** | Utilizes **Telegram Forum Topics** to automatically create a separate topic for each private chat user, isolating messages for organized management. |
 | **👮 Invisible Command System** | Automatically **intercepts** commands starting with `/` sent by users to prevent harassment. Admin commands are only effective within the administrator group. |
 | **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |

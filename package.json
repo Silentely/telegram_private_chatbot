@@ -1,0 +1,19 @@
+{
+  "name": "telegram_private_chatbot",
+  "version": "5.4.0",
+  "description": "基于 Cloudflare Workers 的高性能 Telegram 双向私聊机器人",
+  "private": true,
+  "type": "module",
+  "main": "worker.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "sync-docs": "node scripts/sync-claude-md.js"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}

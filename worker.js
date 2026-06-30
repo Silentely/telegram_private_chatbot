@@ -1,5 +1,19 @@
 // Cloudflare Worker：Telegram 双向机器人 v5.4 (合并 PR #11 + PR #12)
 
+// --- 导入纯函数模块（单一来源，便于单元测试） ---
+import {
+  containsBlockedWord,
+  containsLink,
+  detectSpamKeywords,
+  computeMessageHash,
+  normalizeTgDescription,
+  isTopicMissingOrDeleted,
+  isTestMessageInvalid,
+  withMessageThreadId,
+  parseSpamKeywords,
+  generateVerifyCode,
+} from './src/utils.js';
+
 // --- 配置常量 ---
 const CONFIG = {
   VERIFY_ID_LENGTH: 12,
@@ -106,22 +120,6 @@ async function getBlockedWords(env, forceRefresh = false) {
   return merged;
 }
 
-/**
- * 检查文本是否包含屏蔽词
- * @param {string} text - 待检查文本
- * @param {string[]} words - 屏蔽词列表
- * @returns {{ hit: boolean, word: string|null }}
- */
-function containsBlockedWord(text, words) {
-  if (!text || !words || words.length === 0) return { hit: false, word: null };
-  const lower = text.toLowerCase();
-  for (const w of words) {
-    if (w && lower.includes(w.toLowerCase())) {
-      return { hit: true, word: w };
-    }
-  }
-  return { hit: false, word: null };
-}
 
 // --- 辅助工具函数 ---
 
@@ -224,27 +222,6 @@ async function safeGetJSON(env, key, defaultValue = null) {
   }
 }
 
-function normalizeTgDescription(description) {
-  return (description || "").toString().toLowerCase();
-}
-
-function isTopicMissingOrDeleted(description) {
-  const desc = normalizeTgDescription(description);
-  return desc.includes("thread not found") ||
-    desc.includes("topic not found") ||
-    desc.includes("message thread not found") ||
-    desc.includes("topic deleted") ||
-    desc.includes("thread deleted") ||
-    desc.includes("forum topic not found") ||
-    desc.includes("topic closed permanently");
-}
-
-function isTestMessageInvalid(description) {
-  const desc = normalizeTgDescription(description);
-  return desc.includes("message text is empty") ||
-    desc.includes("bad request: message text is empty");
-}
-
 async function getOrCreateUserTopicRec(from, key, env, userId) {
   const existing = await safeGetJSON(env, key, null);
   if (existing && existing.thread_id) return existing;
@@ -269,10 +246,6 @@ async function getOrCreateUserTopicRec(from, key, env, userId) {
   }
 }
 
-function withMessageThreadId(body, threadId) {
-  if (threadId === undefined || threadId === null) return body;
-  return { ...body, message_thread_id: threadId };
-}
 
 async function probeForumThread(env, expectedThreadId, { userId, reason, doubleCheckOnMissingThreadId = true } = {}) {
   const attemptOnce = async () => {
@@ -474,16 +447,6 @@ async function verifyTurnstileToken(token, secretKey, remoteIp) {
   }
 }
 
-/**
- * 生成安全的验证 code（用于 Turnstile 回调）
- * @returns {string} 随机验证码
- */
-function generateVerifyCode() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 // --- PR #12: 垃圾内容检测模块 ---
 
 /**
@@ -495,68 +458,12 @@ function getSpamKeywords(env) {
   if (spamKeywordsCache) return spamKeywordsCache;
 
   const raw = (env.SPAM_KEYWORDS || '').toString().trim();
-  if (!raw) {
-    spamKeywordsCache = [];
-    return spamKeywordsCache;
-  }
-
-  spamKeywordsCache = raw.split(/[,;，；\n]+/g)
-    .map(s => s.trim().toLowerCase())
-    .filter(s => s.length > 0);
+  spamKeywordsCache = parseSpamKeywords(raw);
 
   if (spamKeywordsCache.length > 0) {
     Logger.info('spam_keywords_loaded', { count: spamKeywordsCache.length });
   }
   return spamKeywordsCache;
-}
-
-/**
- * 检测消息文本中是否包含 URL/链接
- * @param {string} text - 消息文本
- * @returns {boolean}
- */
-function containsLink(text) {
-  if (!text) return false;
-  const patterns = [
-    /https?:\/\/\S+/i,
-    /[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z]{2,}(\/\S*)?/,
-    /t\.me\/\S+/i,
-    /telegram\.me\/\S+/i,
-  ];
-  return patterns.some(p => p.test(text));
-}
-
-/**
- * 检测消息是否包含垃圾关键词
- * @param {string} text - 消息文本
- * @param {string[]} keywords - 关键词列表
- * @returns {{isSpam: boolean, matchedWord: string|null}}
- */
-function detectSpamKeywords(text, keywords) {
-  if (!text || keywords.length === 0) {
-    return { isSpam: false, matchedWord: null };
-  }
-  const lower = text.toLowerCase();
-  for (const word of keywords) {
-    if (lower.includes(word)) {
-      return { isSpam: true, matchedWord: word };
-    }
-  }
-  return { isSpam: false, matchedWord: null };
-}
-
-/**
- * 计算消息内容的简单哈希（用于重复检测）
- * @param {object} msg - Telegram message object
- * @returns {string|null} 哈希字符串，无法计算时返回 null
- */
-function computeMessageHash(msg) {
-  const text = (msg.text || msg.caption || '').trim().toLowerCase();
-  if (!text) return null;
-
-  // 简单 SHA-like：用 text 长度 + 前100字符 + 后20字符 组成 fingerprint
-  const fingerprint = `${text.length}|${text.substring(0, 100)}|${text.substring(Math.max(0, text.length - 20))}`;
-  return fingerprint;
 }
 
 /**
@@ -630,6 +537,51 @@ async function spamCheck(msg, userId, env) {
 }
 
 /**
+ * 统一管理员告警通知
+ * 用于关键异常（转发失败、KV 异常等）向管理员发送即时通知
+ * @param {object} env - 环境变量
+ * @param {string} alertType - 告警类型标识
+ * @param {string} message - 告警内容（Markdown 格式）
+ * @param {number} [threadId] - 可选，发送到指定话题
+ */
+async function notifyAdmin(env, alertType, message, threadId) {
+  Logger.warn('admin_alert', { alertType, messageLength: message.length });
+
+  const body = threadId ? { message_thread_id: threadId } : {};
+
+  try {
+    await tgCall(env, 'sendMessage', {
+      chat_id: env.SUPERGROUP_ID,
+      text: message,
+      parse_mode: 'Markdown',
+      ...body
+    });
+  } catch (e) {
+    Logger.error('admin_alert_failed', e, { alertType });
+  }
+}
+
+/**
+ * 异步更新 spam 统计计数（在 waitUntil 中调用，不阻塞主响应）
+ * @param {object} env - 环境变量
+ * @param {string[]} reasons - spam 命中原因列表
+ */
+async function updateSpamStats(env, reasons) {
+  try {
+    for (const reason of reasons) {
+      const countKey = `stats:spam:${reason}`;
+      const current = parseInt(await env.TOPIC_MAP.get(countKey) || "0");
+      await env.TOPIC_MAP.put(countKey, String(current + 1), { expirationTtl: 2592000 }); // 30天
+    }
+    const totalKey = 'stats:spam:total';
+    const total = parseInt(await env.TOPIC_MAP.get(totalKey) || "0");
+    await env.TOPIC_MAP.put(totalKey, String(total + 1), { expirationTtl: 2592000 });
+  } catch (e) {
+    Logger.warn('spam_stats_update_failed', { error: e.message });
+  }
+}
+
+/**
  * 处理垃圾消息（通知管理员或静默丢弃）
  * @param {object} env - 环境变量
  * @param {number} userId - 用户 ID
@@ -637,13 +589,19 @@ async function spamCheck(msg, userId, env) {
  * @param {object} spamResult - spamCheck 返回的结果
  * @param {number} threadId - 可选，话题 ID
  */
-async function handleSpamMessage(env, userId, msg, spamResult, threadId) {
+async function handleSpamMessage(env, userId, msg, spamResult, threadId, ctx) {
   Logger.warn('spam_detected', {
     userId,
     reasons: spamResult.reasons,
-    details: spamResult.details,
-    textPreview: (msg.text || msg.caption || '').substring(0, 100)
+    details: spamResult.details
   });
+
+  // 统计 spam 拦截计数（按原因分类，便于分析趋势）
+  // 使用 waitUntil 异步写入 KV，不阻塞主响应
+  // 注意：KV 无原子递增，多实例并发下计数可能略低于实际值，仅供参考
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(updateSpamStats(env, spamResult.reasons));
+  }
 
   if (CONFIG.SPAM_NOTIFY_ADMIN && !CONFIG.SPAM_SILENCE_MODE) {
     const reasonText = spamResult.reasons.map(r => {
@@ -1051,7 +1009,7 @@ async function handlePrivateMessage(msg, env, ctx) {
   // PR #12: 垃圾内容检测（在验证之前检查）
   const spamResult = await spamCheck(msg, userId, env);
   if (spamResult.isSpam) {
-    await handleSpamMessage(env, userId, msg, spamResult);
+    await handleSpamMessage(env, userId, msg, spamResult, undefined, ctx);
     return;
   }
 
@@ -1178,7 +1136,7 @@ async function forwardToTopic(msg, userId, key, env, ctx) {
   // PR #12: 垃圾内容检测（转发前二次检查）
   const spamResult = await spamCheck(msg, userId, env);
   if (spamResult.isSpam) {
-    await handleSpamMessage(env, userId, msg, spamResult, rec.thread_id);
+    await handleSpamMessage(env, userId, msg, spamResult, rec.thread_id, ctx);
     return;
   }
 
@@ -1287,12 +1245,29 @@ async function forwardToTopic(msg, userId, key, env, ctx) {
     if (desc.includes("not enough rights")) throw new Error("机器人权限不足 (需 Manage Topics)");
 
     // 如果forwardMessage失败，尝试使用copyMessage作为降级方案
-    await tgCall(env, "copyMessage", {
+    Logger.warn('forward_fallback_to_copy', {
+      userId,
+      threadId: rec.thread_id,
+      originalError: res.description
+    });
+
+    const copyRes = await tgCall(env, "copyMessage", {
       chat_id: env.SUPERGROUP_ID,
       from_chat_id: userId,
       message_id: msg.message_id,
       message_thread_id: rec.thread_id
     });
+
+    if (!copyRes.ok) {
+      // 降级也失败，记录并通知管理员
+      Logger.error('forward_and_copy_both_failed', copyRes.description, {
+        userId,
+        threadId: rec.thread_id
+      });
+      await notifyAdmin(env, 'forward_failed',
+        `⚠️ **消息转发完全失败**\n\n👤 用户: \`${userId}\`\n📝 话题: \`${rec.thread_id}\`\n❌ forwardMessage: \`${res.description}\`\n❌ copyMessage: \`${copyRes.description}\``
+      );
+    }
   }
 }
 
@@ -2314,3 +2289,4 @@ async function delaySend(env, key, ts) {
     await env.TOPIC_MAP.delete(key);
   }
 }
+
