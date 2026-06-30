@@ -797,12 +797,27 @@ export default {
 
         const workerUrl = url.origin;
 
+        // 为内联脚本生成随机 nonce（允许验证页面的内联脚本和同源 fetch 执行）
+        const nonce = secureRandomId(16);
+        const csp = [
+          "default-src 'none'",
+          `script-src 'nonce-${nonce}' https://challenges.cloudflare.com`,
+          "style-src 'unsafe-inline'",
+          "img-src https://challenges.cloudflare.com data:",
+          `connect-src 'self'`,
+          "frame-src https://challenges.cloudflare.com",
+          "base-uri 'none'",
+          "form-action 'none'",
+          "frame-ancestors 'none'",
+        ].join('; ');
+
         return new Response(VERIFY_PAGE_HTML
           .replace(/{{SITE_KEY}}/g, escapeHtml(siteKey))
           .replace(/{{CODE}}/g, escapeHtml(code))
           .replace(/{{USER_ID}}/g, escapeHtml(userId))
-          .replace(/{{WORKER_URL}}/g, escapeHtml(workerUrl)),
-          { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'; script-src https://challenges.cloudflare.com; style-src 'unsafe-inline'; frame-src https://challenges.cloudflare.com" } }
+          .replace(/{{WORKER_URL}}/g, escapeHtml(workerUrl))
+          .replace(/<script>/g, `<script nonce="${nonce}">`),
+          { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': csp } }
         );
       }
 
@@ -1206,7 +1221,7 @@ async function executeMessageForward(msg, userId, threadId, env) {
 
   // 检测 Telegram 静默重定向到 General 的情况
   if (res.ok && resThreadId !== undefined && resThreadId !== null && Number(resThreadId) !== Number(threadId)) {
-    await handleForwardRedirect(res, userId, threadId, env, "forward_redirected_to_general");
+    await handleForwardRedirect(res, msg, userId, threadId, env, "forward_redirected_to_general");
     return;
   }
 
@@ -1214,7 +1229,7 @@ async function executeMessageForward(msg, userId, threadId, env) {
   if (res.ok && (resThreadId === undefined || resThreadId === null)) {
     const probe = await probeForumThread(env, threadId, { userId, reason: "forward_result_missing_thread_id" });
     if (probe.status !== "ok") {
-      await handleForwardRedirect(res, userId, threadId, env, `forward_missing_thread_id:${probe.status}`);
+      await handleForwardRedirect(res, msg, userId, threadId, env, `forward_missing_thread_id:${probe.status}`);
       return;
     }
   }
@@ -1228,9 +1243,10 @@ async function executeMessageForward(msg, userId, threadId, env) {
 /**
  * 处理转发重定向 — 删除误投消息 + 触发重建
  */
-async function handleForwardRedirect(res, userId, threadId, env, reason) {
+async function handleForwardRedirect(res, msg, userId, threadId, env, reason) {
   Logger.warn('forward_redirected', { userId, expectedThreadId: threadId, reason });
 
+  // 删除误投到 General 的消息（使用 Telegram 返回的消息 ID）
   if (res.result?.message_id) {
     try {
       await tgCall(env, "deleteMessage", {
@@ -1242,11 +1258,12 @@ async function handleForwardRedirect(res, userId, threadId, env, reason) {
     }
   }
 
+  // 使用用户原消息 ID（msg.message_id）作为 pendingMsgId，而非误投消息的 ID
   await resetUserVerificationAndRequireReverify(env, {
     userId,
     userKey: `user:${userId}`,
     oldThreadId: threadId,
-    pendingMsgId: res.result?.message_id,
+    pendingMsgId: msg?.message_id || res.result?.message_id,
     reason,
   });
 }
@@ -1688,8 +1705,13 @@ async function sendTurnstileChallenge(userId, env, pendingMsgId, writtenKeys) {
     }
   });
 
+  // 发送失败时抛出异常，触发外层回滚（清理已写入的 turnstile_code、pending_turnstile、user_challenge）
+  if (!verifyMsg.ok) {
+    throw new Error(`Turnstile 验证消息发送失败: ${verifyMsg.description || '未知错误'}`);
+  }
+
   // 存储验证消息 ID（验证成功后删除）
-  if (verifyMsg.ok && verifyMsg.result?.message_id) {
+  if (verifyMsg.result?.message_id) {
     await env.TOPIC_MAP.put(`turnstile_msg:${verifyCode}`, String(verifyMsg.result.message_id), { expirationTtl: CONFIG.TURNSTILE_VERIFY_TTL });
     writtenKeys.push(`turnstile_msg:${verifyCode}`);
   }
@@ -1738,12 +1760,18 @@ async function sendLocalQuizChallenge(userId, env, pendingMsgId, writtenKeys) {
     keyboard.push(buttons.slice(i, i + CONFIG.BUTTON_COLUMNS));
   }
 
-  await tgCall(env, "sendMessage", {
+  // 发送验证题目
+  const quizMsg = await tgCall(env, "sendMessage", {
     chat_id: userId,
     text: `🛡️ **人机验证**\n\n${challenge.question}\n\n请点击下方按钮回答 (回答正确后将自动发送您刚才的消息)。`,
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: keyboard }
   });
+
+  // 发送失败时抛出异常，触发外层回滚（清理已写入的 chal、user_challenge）
+  if (!quizMsg.ok) {
+    throw new Error(`本地题库验证消息发送失败: ${quizMsg.description || '未知错误'}`);
+  }
 }
 
 async function handleCallbackQuery(query, env, ctx) {
@@ -1884,15 +1912,16 @@ async function forwardPendingMessages(state, userId, query, env, ctx) {
     // 并行转发待处理消息（并发限制为 3，平衡速度与 API 限流）
     const CONCURRENT_FORWARDS = 3;
     let forwardedCount = 0;
+    let skippedCount = 0;
     for (let i = 0; i < pendingIds.length; i += CONCURRENT_FORWARDS) {
       const batch = pendingIds.slice(i, i + CONCURRENT_FORWARDS);
       const results = await Promise.allSettled(batch.map(async (pendingId) => {
-        if (!pendingId) return;
+        if (!pendingId) return { forwarded: false, reason: 'empty_id' };
         const forwardedKey = `forwarded:${userId}:${pendingId}`;
         const alreadyForwarded = await env.TOPIC_MAP.get(forwardedKey);
         if (alreadyForwarded) {
           Logger.info('message_forward_duplicate_skipped', { userId, messageId: pendingId });
-          return;
+          return { forwarded: false, reason: 'already_forwarded' };
         }
         const fakeMsg = {
           message_id: pendingId,
@@ -1901,8 +1930,17 @@ async function forwardPendingMessages(state, userId, query, env, ctx) {
         };
         await forwardToTopic(fakeMsg, userId, `user:${userId}`, env, ctx);
         await env.TOPIC_MAP.put(forwardedKey, "1", { expirationTtl: 3600 });
+        return { forwarded: true };
       }));
-      forwardedCount += results.filter(r => r.status === 'fulfilled').length;
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value?.forwarded) {
+          forwardedCount++;
+        } else if (r.status === 'fulfilled' && !r.value?.forwarded) {
+          skippedCount++;
+        } else if (r.status === 'rejected') {
+          Logger.warn('pending_forward_item_failed', { userId, error: r.reason?.message });
+        }
+      }
     }
 
     if (forwardedCount > 0) {

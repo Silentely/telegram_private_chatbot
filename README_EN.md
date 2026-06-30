@@ -197,7 +197,7 @@ A: `/trust` permanently exempts a user from verification (never expires). `/rese
 A: Use `/cleanup` in the admin group. It scans for deleted topics and expired KV records and cleans them up.
 
 **Q: Can I use a self-hosted Telegram Bot API server?**
-A: Yes, set the `API_BASE` environment variable. Note: only `https://api.telegram.org` and `https://api.telegram.dev` are allowed.
+A: Self-hosted Bot API is currently not supported. The `API_BASE` environment variable is restricted to a allowlist (`https://api.telegram.org` and `https://api.telegram.dev`) to prevent SSRF attacks. If you need self-hosting support, you must explicitly extend the allowlist in the source code.
 
 ---
 

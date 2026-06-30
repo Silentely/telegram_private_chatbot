@@ -269,9 +269,10 @@ Worker 暴露以下 HTTP 端点：
 
 | 错误码 | 说明 |
 |--------|------|
-| `missing_params` | 缺少必要参数 |
+| `missing_params` | 缺少必要参数（token、code、userId） |
 | `turnstile_failed` | Turnstile token 验证失败 |
-| `code_invalid_or_expired` | 验证链接已过期 |
+| `code_invalid_or_expired` | 验证链接已过期（有效期 10 分钟） |
+| `server_not_configured` | 服务器未配置 Turnstile 密钥 |
 | `server_error` | 服务器内部错误 |
 
 ---
